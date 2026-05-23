@@ -1,27 +1,45 @@
 import 'package:benchmark_harness/benchmark_harness.dart';
 import 'package:pro_mpack/pro_mpack.dart';
 
+import 'utils/custom.dart';
 import 'utils/data.dart';
-import 'utils/utils.dart';
 
 class SerializerBenchmark extends BenchmarkBase {
-  SerializerBenchmark(this.iterations) : super('mpack - serialize');
-
-  final int iterations;
+  const SerializerBenchmark() : super('mpack - serialize');
 
   @override
   void run() {
-    for (var i = 0; i < iterations; i++) {
-      final _ = serialize(
-        object,
-        extEncoder: CustomTypesExtEncoder(
-          timeStampFormat: TimeStampFormat.ts96,
-        ),
-      );
+    for (var i = 0; i < 1000; i++) {
+      final encoded = serialize(object);
+
+      if (encoded.length != 421) {
+        throw Exception('Invalid encoded length: ${encoded.length}');
+      }
     }
   }
+
+  @override
+  void exercise() => run();
+}
+
+class SerializerModelsBenchmark extends BenchmarkBase {
+  SerializerModelsBenchmark() : super('mpack - serialize models');
+
+  @override
+  void run() {
+    for (var i = 0; i < 1000; i++) {
+      final encoded = codec.encode(user);
+      if (encoded.length != 263) {
+        throw Exception('Invalid encoded length: ${encoded.length}');
+      }
+    }
+  }
+
+  @override
+  void exercise() => run();
 }
 
 void main() {
-  SerializerBenchmark(1000).report();
+  const SerializerBenchmark().report();
+  SerializerModelsBenchmark().report();
 }

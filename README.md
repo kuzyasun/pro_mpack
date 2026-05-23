@@ -1,199 +1,211 @@
 # pro_mpack
 
-This is a Dart library for serializing and deserializing data using the [MessagePack](https://github.com/msgpack/msgpack/blob/master/spec.md#messagepack-specification) format. It supports custom extension types and efficient binary encoding, making it ideal for applications that require compact and fast data interchange.
+A high-performance Dart library for serializing and deserializing data using the [MessagePack](https://github.com/msgpack/msgpack/blob/master/spec.md#messagepack-specification) format.
+
+MessagePack is an efficient binary serialization format that's smaller and faster than JSON, while maintaining similar flexibility. This library provides a modern, clean implementation of the MessagePack specification with powerful support for custom extension types.
 
 ## Features
 
-- Serialize and deserialize Dart objects to and from [MessagePack](https://github.com/msgpack/msgpack/blob/master/spec.md#messagepack-specification) format.
-- Support for custom [extension types](https://github.com/msgpack/msgpack/blob/master/spec.md#extension-types).
-- Efficient binary encoding for various data types.
-- Full support for MessagePack's type system, including integers, strings, arrays, maps, and more.
+✨ **Unified & Modern API**
+- Single entry point through the `MessagePack` class
+- Support for both **Declarative** (builder pattern) and **Imperative** extension registration
+- Full integration with Dart's `Codec` system (`dart:convert`)
 
-## Installation
+🚀 **High Performance**
+- Zero-copy operations where possible
+- Efficient buffer management with `BinaryWriterPool`
+- Optimized encoding/decoding paths for different value ranges
+- Fast UTF-8 string handling
 
-Add `pro_mpack` to your `pubspec.yaml` file:
+🔧 **Flexible & Extensible**
+- Easy custom extension support with recursive packing/unpacking
+- Built-in `DateTime` timestamp support
+- **Float wrapper**: Force 32-bit float serialization with `Float`
+- **Groups**: Organise multiple related types under a single extension ID (great for polymorphism)
+- Reusable serializer/deserializer engines for low-level control
 
-```yaml
-dependencies:
-  pro_mpack: ^2.0.2
-```
+📦 **Production Ready**
+- Comprehensive test coverage
+- Cross-platform support (VM, Web, Native)
 
-Then `run pub get` to install the package.
+## Quick Start
 
-## Usage
-
-Basic Serialization and Deserialization
+### Basic Usage
 
 ```dart
 import 'package:pro_mpack/pro_mpack.dart';
 
-// Serialize an object
-final serializedData = serialize({'key': 'value'});
+void main() {
+  // Create a MessagePack instance
+  final mpack = MessagePack();
 
-// Deserialize the data back to an object
-final deserializedData = deserialize(serializedData);
+  final data = {
+    'name': 'Alice',
+    'age': 30,
+    'scores': [95, 87, 92],
+  };
 
-print(deserializedData); // Output: {key: value}
+  final bytes = mpack.pack(data);
+  print('Serialized to ${bytes.length} bytes');
+
+  // Unpack and cast if needed
+  final decoded = mpack.unpack<Map>(bytes);
+  print(decoded); // {name: Alice, age: 30, ...}
+}
 ```
 
-## Custom Extension Types
+### Simple Functions
 
-To handle custom extension types, use mixin the `ExtEncoder` and `ExtDecoder`.
+For quick serialization without creating an instance, use the top-level functions:
 
-``` dart
-import 'dart:typed_data';
-
-import 'package:pro_binary/pro_binary.dart';
+```dart
 import 'package:pro_mpack/pro_mpack.dart';
 
-enum TimeStampFormat {
-  ts32,
-  ts64,
-  ts96;
-
-  static TimeStampFormat fromLength(int length) {
-    switch (length) {
-      case 4:
-        return ts32;
-      case 8:
-        return ts64;
-      case 12:
-        return ts96;
-      default:
-        throw Exception('Invalid timestamp length');
-    }
-  }
-}
-
-/// Custom extension encoder for serializing DateTime objects.
-class CustomTypesExtEncoder with ExtEncoder {
-  CustomTypesExtEncoder({required this.timeStampFormat});
-
-  /// The format of the timestamp.
-  final TimeStampFormat timeStampFormat;
-
-  @override
-  int? extTypeForObject(Object? object) {
-    if (object is DateTime) {
-      return -1;
-    }
-
-    throw Exception('Unknown object type');
-  }
-
-  @override
-  Uint8List encodeObject(Object? object) {
-    if (object is DateTime) {
-      final writer = BinaryWriter();
-
-      switch (timeStampFormat) {
-        case TimeStampFormat.ts32:
-          final seconds = object.millisecondsSinceEpoch ~/ 1000;
-          writer.writeUint32(seconds);
-        case TimeStampFormat.ts64:
-          final seconds = object.millisecondsSinceEpoch ~/ 1000;
-          final nanoSeconds = (object.microsecondsSinceEpoch % 1000000) * 1000;
-          writer.writeUint32(nanoSeconds);
-          writer.writeUint32(seconds);
-        case TimeStampFormat.ts96:
-          final seconds = object.millisecondsSinceEpoch ~/ 1000;
-          final nanoSeconds = (object.microsecondsSinceEpoch % 1000000) * 1000;
-          writer.writeUint32(nanoSeconds);
-          writer.writeInt64(seconds);
-      }
-
-      return writer.takeBytes();
-    }
-
-    throw Exception('Unknown object type');
-  }
-}
-
-/// Custom extension decoder for deserializing DateTime objects.
-class CustomTypesExtDecoder implements ExtDecoder {
-  @override
-  Object? decodeObject(int extType, Uint8List data) {
-    if (extType == -1) {
-      final type = TimeStampFormat.fromLength(data.length);
-      final reader = BinaryReader(data);
-      switch (type) {
-        // Timestamp 32: stores the number of seconds that have elapsed since
-        // 1970-01-01 00:00:00 UTC in a 32-bit unsigned integer.
-        case TimeStampFormat.ts32:
-          final seconds = reader.readUint32();
-          return DateTime.fromMillisecondsSinceEpoch(
-            seconds * 1000,
-            isUtc: true,
-          );
-        // Timestamp 64: stores the number of seconds and nanoseconds that have
-        // elapsed since 1970-01-01 00:00:00 UTC in 32-bit unsigned integers.
-        case TimeStampFormat.ts64:
-          final nanoSeconds = reader.readUint32();
-          final seconds = reader.readUint32();
-          return DateTime.fromMillisecondsSinceEpoch(
-            seconds * 1000,
-            isUtc: true,
-          ).add(Duration(microseconds: nanoSeconds ~/ 1000));
-        // Timestamp 96: stores the number of seconds and nanoseconds that have
-        // elapsed since 1970-01-01 00:00:00 UTC in a 64-bit signed integer and
-        // a 32-bit unsigned integer.
-        case TimeStampFormat.ts96:
-          final nanoSeconds = reader.readUint32();
-          final seconds = reader.readInt64();
-          return DateTime.fromMillisecondsSinceEpoch(
-            seconds * 1000,
-            isUtc: true,
-          ).add(Duration(microseconds: nanoSeconds ~/ 1000));
-      }
-    }
-    throw UnimplementedError();
-  }
-}
-
 void main() {
-  // Serialize with custom extension
-  final date = DateTime.utc(2021, 1, 1, 12, 32, 5, 880, 999);
-  final userData = serialize(
-    {
-      'id': 1,
-      'name': 'John Doe',
-      'created': date,
-      'updated': date.add(const Duration(days: 1)),
-    },
-    extEncoder: CustomTypesExtEncoder(
-      timeStampFormat: TimeStampFormat.ts64,
-    ),
-  );
+  // Single value serialization/deserialization
+  final bytes = serialize({'key': 'value', 'count': 42});
+  final decoded = deserialize(bytes);
+  print(decoded); // {key: value, count: 42}
 
-  // Deserialize with custom extension
-  final deserializedData = deserialize(
-    userData,
-    extDecoder: CustomTypesExtDecoder(),
-  );
+  // Multiple values serialized to a single buffer
+  final multiBytes = serializeAll([1, 'hello', true, {'nested': true}]);
+  final decodedAll = deserializeAll(multiBytes);
+  print(decodedAll); // [1, hello, true, {nested: true}]
 
-  print(deserializedData);
-  // Output:
-  // {
-  //  id: 1,
-  //  name: John Doe,
-  //  created: 2021-01-01 12:32:05.880999Z,
-  //  updated: 2021-01-02 12:32:05.880999Z
-  //}
+  // Optional parameters
+  final withBuffer = serialize({'data': 'large'}, initialBufferSize: 2048);
+  final withMapOrder = deserialize(
+    serialize({'z': 1, 'a': 2}),
+    preserveMapOrder: true, // preserves insertion order
+  );
 }
 ```
 
-## Running Tests
+## Advanced Usage: Custom Extensions
 
-To run the tests for `pro_mpack`, use the following command:
+### 1. Declarative Approach (Recommended)
+
+Perfect for configuring your application's data protocol in one place.
+
+```dart
+final mpack = MessagePack(
+  extensions: (config) {
+    // Register a custom codec for BigInt, which is not natively supported by MessagePack
+    config.register<BigInt>(
+      extId: 1,
+      encoder: (val, ctx) => ctx.pack(val.toString()),
+      decoder: (bytes, ctx) => BigInt.parse(ctx.unpack<String>(bytes)),
+    );
+
+    // Register a group of related types under a common base class
+    config.registerGroup<dynamic>(
+      extId: 2,
+      builder: (group) {
+        group.add<Address>(
+          subId: 1,
+          encoder: (addr, ctx) => ctx.packAll([addr.street, addr.city]),
+          decoder: (data, ctx) {
+            final [street as String, city as String] = ctx.unpackAll(data);
+            return Address(street: street, city: city);
+          },
+        );
+      },
+    );
+  },
+);
+
+class Address {
+  const Address({required this.street, required this.city});
+  final String street;
+  final String city;
+}
+```
+
+### 2. Imperative Approach
+
+Useful for dynamic configuration or modular extensions.
+
+```dart
+final mpack = MessagePack();
+
+mpack.register<MyType>(
+  extId: 10,
+  encoder: (v, ctx) => myEncoder(v),
+  decoder: (d, ctx) => myDecoder(d),
+);
+```
+
+### 3. Sub-registries (Groups)
+
+MessagePack extension IDs are limited to the range -128 to 127 (256 values total). When you have many related types or polymorphic hierarchies, registering each type separately quickly exhausts this space. `registerGroup` solves this by letting you group multiple subtypes under a single extension ID — each subtype uses an internal `subId` to distinguish itself.
+
+This is ideal for:
+- **Polymorphic types**: A base class with many subclasses (e.g., `Shape` → `Circle`, `Square`, `Triangle`)
+- **Organized type families**: Related models that share a namespace (e.g., all `User`-related types)
+- **ID conservation**: Reducing the number of extension IDs consumed when you have many small types
+
+```dart
+mpack.registerGroup<Shape>(
+  extId: 20,
+  builder: (group) {
+    group.add<Circle>(
+      subId: 1,
+      encoder: (c, ctx) => ctx.pack(c.radius),
+      decoder: (d, ctx) => Circle(ctx.unpack(d)),
+    );
+    group.add<Square>(
+      subId: 2,
+      encoder: (s, ctx) => ctx.pack(s.side),
+      decoder: (d, ctx) => Square(ctx.unpack(d)),
+    );
+  },
+);
+```
+
+### 4. Float Wrapper
+
+By default, `double` values are serialized as 64-bit floats. Use the `Float` wrapper for 32-bit:
+
+```dart
+final bytes = mpack.pack(Float(3.14)); // Serialized as float32
+```
+
+## Error Handling
+
+`pro_mpack` uses a modern `sealed` exception hierarchy (Dart 3.10+), providing granular control over error handling and actionable suggestions to fix issues.
+
+```dart
+try {
+  final result = deserialize(corruptedBytes);
+} on MessagePackException catch (e) {
+  // Use pattern matching for exhaustive error handling
+  switch (e) {
+    case MessagePackFormatException():
+      print('Binary data is invalid: ${e.message}');
+    case MessagePackUnsupportedTypeException():
+      print('No encoder for type: ${e.unsupportedType}');
+    case MessagePackSizeException():
+      print('Data exceeds 4GB limit: ${e.message}');
+    case MessagePackConfigurationException():
+      print('Invalid extension setup: ${e.message}');
+  }
+  
+  // Every exception includes a helpful suggestion
+  if (e.suggestion != null) {
+    print('💡 Suggestion: ${e.suggestion}');
+  }
+}
+```
+
+## Testing
+
+The library includes comprehensive tests covering all features and edge cases. To run the tests, use:
 
 ```bash
-dart pub run test
+dart test
+
 ```
-
-## Contributions
-
-Contributions are welcome! Please open an [issue](https://github.com/pro100andrey/pro_mpack/issues) or submit a [pull request](https://github.com/pro100andrey/pro_mpack/pulls) on GitHub.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
+MIT License. See [LICENSE](./LICENSE) for details.

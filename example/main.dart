@@ -1,139 +1,206 @@
-import 'dart:typed_data';
+// Disable warnings for print statements in this example
+// ignore_for_file: avoid_print
 
-import 'package:pro_binary/pro_binary.dart';
 import 'package:pro_mpack/pro_mpack.dart';
 
-enum TimeStampFormat {
-  ts32,
-  ts64,
-  ts96;
-
-  static TimeStampFormat fromLength(int length) {
-    switch (length) {
-      case 4:
-        return ts32;
-      case 8:
-        return ts64;
-      case 12:
-        return ts96;
-      default:
-        throw Exception('Invalid timestamp length');
-    }
-  }
-}
-
-/// Custom extension encoder for serializing DateTime objects.
-class CustomTypesExtEncoder with ExtEncoder {
-  CustomTypesExtEncoder({required this.timeStampFormat});
-
-  /// The format of the timestamp.
-  final TimeStampFormat timeStampFormat;
-
-  @override
-  int? extTypeForObject(dynamic object) {
-    if (object is DateTime) {
-      return -1;
-    }
-
-    throw Exception('Unknown object type');
-  }
-
-  @override
-  Uint8List encodeObject(dynamic object) {
-    if (object is DateTime) {
-      final writer = BinaryWriter();
-
-      switch (timeStampFormat) {
-        case TimeStampFormat.ts32:
-          final seconds = object.millisecondsSinceEpoch ~/ 1000;
-          writer.writeUint32(seconds);
-        case TimeStampFormat.ts64:
-          final seconds = object.millisecondsSinceEpoch ~/ 1000;
-          final nanoSeconds = (object.microsecondsSinceEpoch % 1000000) * 1000;
-          writer.writeUint32(nanoSeconds);
-          writer.writeUint32(seconds);
-        case TimeStampFormat.ts96:
-          final seconds = object.millisecondsSinceEpoch ~/ 1000;
-          final nanoSeconds = (object.microsecondsSinceEpoch % 1000000) * 1000;
-          writer.writeUint32(nanoSeconds);
-          writer.writeInt64(seconds);
-      }
-
-      return writer.takeBytes();
-    }
-
-    throw Exception('Unknown object type');
-  }
-}
-
-/// Custom extension decoder for deserializing DateTime objects.
-class CustomTypesExtDecoder implements ExtDecoder {
-  @override
-  dynamic decodeObject(int extType, Uint8List data) {
-    if (extType == -1) {
-      final type = TimeStampFormat.fromLength(data.length);
-      final reader = BinaryReader(data);
-      switch (type) {
-        // Timestamp 32: stores the number of seconds that have elapsed since
-        // 1970-01-01 00:00:00 UTC in a 32-bit unsigned integer.
-        case TimeStampFormat.ts32:
-          final seconds = reader.readUint32();
-          return DateTime.fromMillisecondsSinceEpoch(
-            seconds * 1000,
-            isUtc: true,
-          );
-        // Timestamp 64: stores the number of seconds and nanoseconds that have
-        // elapsed since 1970-01-01 00:00:00 UTC in 32-bit unsigned integers.
-        case TimeStampFormat.ts64:
-          final nanoSeconds = reader.readUint32();
-          final seconds = reader.readUint32();
-          return DateTime.fromMillisecondsSinceEpoch(
-            seconds * 1000,
-            isUtc: true,
-          ).add(Duration(microseconds: nanoSeconds ~/ 1000));
-        // Timestamp 96: stores the number of seconds and nanoseconds that have
-        // elapsed since 1970-01-01 00:00:00 UTC in a 64-bit signed integer and
-        // a 32-bit unsigned integer.
-        case TimeStampFormat.ts96:
-          final nanoSeconds = reader.readUint32();
-          final seconds = reader.readInt64();
-          return DateTime.fromMillisecondsSinceEpoch(
-            seconds * 1000,
-            isUtc: true,
-          ).add(Duration(microseconds: nanoSeconds ~/ 1000));
-      }
-    }
-    throw UnimplementedError();
-  }
-}
-
 void main() {
-  final date = DateTime.utc(2021, 1, 1, 12, 32, 5, 880, 999);
-  final userData = serialize(
-    {
-      'id': 1,
-      'name': 'John Doe',
-      'created': date,
-      'updated': date.add(const Duration(days: 1)),
+  final mp = MessagePack(
+    extensions: (config) {
+      config
+        // Register a custom codec for BigInt, which is not natively
+        // supported by MessagePack
+        ..registerBigInt()
+        // Group for user-related types
+        ..registerGroup<dynamic>(
+          extId: 2,
+          builder: (group) => group
+            ..userCodec()
+            ..addressCodec()
+            ..productCodec(),
+        );
     },
-    extEncoder: CustomTypesExtEncoder(
-      timeStampFormat: TimeStampFormat.ts64,
-    ),
   );
 
-  // Deserialize with custom extension
-  final deserializedData = deserialize(
-    userData,
-    extDecoder: CustomTypesExtDecoder(),
+  final user = User(
+    id: 1,
+    name: 'Alice',
+    age: 30,
+    email: 'alice@example.com',
+    created: DateTime.utc(2023),
+    updated: DateTime.utc(2023, 1, 2),
+    addresses: [
+      const Address(street: '123 Main St', city: 'New York', zipCode: 10001),
+    ],
+    products: [
+      Product(
+        title: 'Gadget',
+        description: 'A useful gadget',
+        price: BigInt.parse('123456789012345678901234567890'),
+      ),
+    ],
   );
 
-  // ignore: avoid_print
-  print(deserializedData);
-  // Output:
-  // {
-  //  id: 1,
-  //  name: John Doe,
-  //  created: 2021-01-01 12:32:05.880999Z,
-  //  updated: 2021-01-02 12:32:05.880999Z
-  //}
+  final userBytes = mp.pack(user);
+  final decodedUser = mp.unpack<User>(userBytes);
+
+  print('Decoded User: $decodedUser');
+  print('Bytes: ${userBytes.length}');
+}
+
+class Address {
+  const Address({
+    required this.street,
+    required this.city,
+    required this.zipCode,
+  });
+
+  final String street;
+  final String city;
+  final int zipCode;
+
+  @override
+  String toString() => 'Address(street: $street, city: $city, zip: $zipCode)';
+}
+
+class User {
+  const User({
+    required this.id,
+    required this.name,
+    required this.age,
+    required this.email,
+    required this.created,
+    required this.updated,
+    required this.addresses,
+    required this.products,
+  });
+
+  final int id;
+  final String name;
+  final int age;
+  final String email;
+  final DateTime created;
+  final DateTime updated;
+  final List<Address> addresses;
+  final List<Product> products;
+
+  @override
+  String toString() =>
+      'User(id: $id, name: $name, age: $age, email: $email, created: $created, '
+      'updated: $updated, addresses: $addresses, products: $products)';
+}
+
+class Product {
+  Product({
+    required this.description,
+    required this.price,
+    required this.title,
+  });
+
+  final BigInt price;
+  final String description;
+  final String title;
+
+  @override
+  String toString() =>
+      'Product(title: $title, description: $description, price: $price)';
+}
+
+extension BigIntMessagePack on MessagePack {
+  void registerBigInt() => register<BigInt>(
+    extId: 1,
+    encoder: (value, ctx) => ctx.pack(value.toString()),
+    decoder: (data, ctx) => BigInt.parse(ctx.unpack<String>(data)),
+  );
+}
+
+extension UserMessagePackGroup on MessagePackGroup {
+  void userCodec() => add<User>(
+    subId: 100,
+    encoder: (user, ctx) {
+      final fields = [
+        user.id,
+        user.name,
+        user.age,
+        user.email,
+        user.created,
+        user.updated,
+        user.addresses,
+        user.products,
+      ];
+
+      return ctx.packAll(fields);
+    },
+    decoder: (data, ctx) {
+      final fields = ctx.unpackAll<Object?>(data);
+
+      final [
+        id as int,
+        name as String,
+        age as int,
+        email as String,
+        created as DateTime,
+        updated as DateTime,
+        adds as List,
+        products as List,
+      ] = fields;
+
+      return User(
+        id: id,
+        name: name,
+        age: age,
+        email: email,
+        created: created,
+        updated: updated,
+        addresses: adds.cast(),
+        products: products.cast(),
+      );
+    },
+  );
+}
+
+extension AddressMessagePackGroup on MessagePackGroup {
+  void addressCodec() => add<Address>(
+    subId: 200,
+    encoder: (addr, ctx) {
+      final fields = [
+        addr.street,
+        addr.city,
+        addr.zipCode,
+      ];
+
+      return ctx.packAll(fields);
+    },
+    decoder: (data, ctx) {
+      final fields = ctx.unpackAll<Object?>(data);
+
+      final [
+        street as String,
+        city as String,
+        zipCode as int,
+      ] = fields;
+
+      return Address(street: street, city: city, zipCode: zipCode);
+    },
+  );
+}
+
+extension ProductMessagePackGroup on MessagePackGroup {
+  void productCodec() => add<Product>(
+    subId: 300,
+    encoder: (product, ctx) {
+      final fields = [product.description, product.price, product.title];
+      return ctx.packAll(fields);
+    },
+    decoder: (data, ctx) {
+      final fields = ctx.unpackAll<Object?>(data);
+
+      final [
+        description as String,
+        price as BigInt,
+        title as String,
+      ] = fields;
+
+      return Product(description: description, price: price, title: title);
+    },
+  );
 }
