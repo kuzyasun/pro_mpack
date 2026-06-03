@@ -11,6 +11,7 @@ class DeserializerBenchmark extends BenchmarkBase {
   DeserializerBenchmark() : super('mpack - deserialize');
 
   late final Uint8List bytes;
+
   @override
   void setup() {
     bytes = serialize(object);
@@ -19,7 +20,9 @@ class DeserializerBenchmark extends BenchmarkBase {
   @override
   void run() {
     for (var i = 0; i < 1000; i++) {
-      final _ = deserialize(bytes);
+      final result = deserialize(bytes);
+
+      final _ = result;
     }
   }
 
@@ -31,15 +34,26 @@ class DeserializerModelsBenchmark extends BenchmarkBase {
   DeserializerModelsBenchmark() : super('mpack - deserialize models');
 
   late final Uint8List bytes;
+
   @override
   void setup() {
-    bytes = codec.encode(user);
+    bytes = mpack.encode([user, circle, rectangle, product]);
   }
 
   @override
   void run() {
     for (var i = 0; i < 1000; i++) {
-      final _ = codec.decode<User>(bytes);
+      final [
+        User user,
+        Circle circle,
+        Rectangle rectangle,
+        Product product,
+      ] = mpack.decode(bytes) as List;
+
+      final _ = user;
+      final _ = circle;
+      final _ = rectangle;
+      final _ = product;
     }
   }
 

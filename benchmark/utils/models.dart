@@ -26,6 +26,7 @@ class User {
     required this.data,
     required this.addresses,
     required this.numbers,
+    required this.bigValue,
   });
 
   final int id;
@@ -37,26 +38,50 @@ class User {
   final Uint8List data;
   final List<Address> addresses;
   final List<int> numbers;
+  final BigInt bigValue;
 
   @override
   String toString() =>
       'User(id: $id, name: $name, age: $age, email: $email, created: $created, '
       'updated: $updated, data length: ${data.length}, addresses: $addresses, '
-      'numbers: $numbers)';
+      'numbers: $numbers, bigValue: $bigValue)';
 }
 
 class Product {
   Product({
+    required this.title,
     required this.description,
     required this.price,
-    required this.title,
   });
 
-  final BigInt price;
-  final String description;
   final String title;
+  final String description;
+  final BigInt price;
 
   @override
   String toString() =>
       'Product(title: $title, description: $description, price: $price)';
+}
+
+abstract class Shape {
+  const Shape();
+}
+
+class Circle extends Shape {
+  const Circle(this.radius);
+
+  final double radius;
+
+  @override
+  String toString() => 'Circle(radius: $radius)';
+}
+
+class Rectangle extends Shape {
+  const Rectangle(this.width, this.height);
+
+  final double width;
+  final double height;
+
+  @override
+  String toString() => 'Rectangle(width: $width, height: $height)';
 }

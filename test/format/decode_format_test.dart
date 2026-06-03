@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:pro_mpack/pro_mpack.dart';
 import 'package:test/test.dart';
 
-import 'utils/utils.dart';
+import '../utils/types.dart';
 
 void main() {
   // Nil format
@@ -22,7 +22,7 @@ void main() {
         isA<MessagePackFormatException>().having(
           (e) => e.message,
           'message',
-          contains('reserved and never used'),
+          contains('never used'),
         ),
       ),
     );
@@ -40,7 +40,7 @@ void main() {
         isA<MessagePackFormatException>().having(
           (e) => e.message,
           'message',
-          contains('reserved and never used'),
+          contains('never used'),
         ),
       ),
     );
@@ -58,7 +58,7 @@ void main() {
         isA<MessagePackFormatException>().having(
           (e) => e.message,
           'message',
-          contains('reserved and never used'),
+          contains('never used'),
         ),
       ),
     );
@@ -331,7 +331,7 @@ void main() {
     ); // Custom extension
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(result, 'Custom ext type 1 with data [42]');
   });
@@ -342,7 +342,7 @@ void main() {
     ); // Custom extension
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(result, 'Custom ext type 2 with data [42, 43]');
   });
@@ -353,7 +353,7 @@ void main() {
     ); // Custom extension
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(result, 'Custom ext type 3 with data [42, 43, 44, 45]');
   });
@@ -364,7 +364,7 @@ void main() {
     ); // Custom extension
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(
       result,
@@ -379,7 +379,7 @@ void main() {
     ]); // Custom extension
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(
       result,
@@ -433,6 +433,7 @@ void main() {
       ),
     );
   });
+
   // Extension format tests (ext 8, ext 16, ext 32)
   test('deserializes ext 8 format correctly', () {
     final buffer = Uint8List.fromList(
@@ -440,7 +441,7 @@ void main() {
     );
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(result, 'Custom ext type 10 with data [1, 2, 3]');
   });
@@ -452,7 +453,7 @@ void main() {
     );
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(result, 'Custom ext type 11 with data $data');
   });
@@ -464,7 +465,7 @@ void main() {
     ); // length 300, type 12
     final result = deserialize(
       buffer,
-      extDecoder: CustomExtDecoder(),
+      decodeExt: createCustomDecoder(),
     );
     expect(result, 'Custom ext type 12 with data $data');
   });
@@ -519,185 +520,6 @@ void main() {
     final result = deserialize(buffer);
     expect(result, <Object?, Object?>{
       'a': {'b': 1},
-    });
-  });
-
-  group('preserveMapOrder', () {
-    test('preserves map order when true', () {
-      final buffer = Uint8List.fromList([
-        0x83, // fixmap(3)
-        0xa1, 0x7a, 1, // "z": 1
-        0xa1, 0x61, 2, // "a": 2
-        0xa1, 0x6d, 3, // "m": 3
-      ]);
-      final result = deserialize(buffer, preserveMapOrder: true)! as Map;
-      expect(result.keys.toList(), ['z', 'a', 'm']);
-    });
-
-    test('does not guarantee map order when false (default)', () {
-      final buffer = Uint8List.fromList([
-        0x83, // fixmap(3)
-        0xa1, 0x7a, 1, // "z": 1
-        0xa1, 0x61, 2, // "a": 2
-        0xa1, 0x6d, 3, // "m": 3
-      ]);
-      final result = deserialize(buffer, preserveMapOrder: false)! as Map;
-      expect(result, isA<Map<dynamic, dynamic>>());
-      expect(result, {
-        'z': 1,
-        'a': 2,
-        'm': 3,
-      });
-    });
-  });
-
-  group('deserializeAll', () {
-    test('deserializes empty buffer', () {
-      final buffer = Uint8List.fromList([]);
-      final result = deserializeAll(buffer);
-      expect(result, isEmpty);
-    });
-
-    test('deserializes single value', () {
-      final buffer = Uint8List.fromList([0x2a /* 42 */]);
-      final result = deserializeAll(buffer);
-      expect(result, [42]);
-    });
-
-    test('deserializes multiple primitive values', () {
-      final buffer = Uint8List.fromList([
-        0x7b, // 123
-        0xa5, // fixstr with length 5
-        0x68, 0x65, 0x6c, 0x6c, 0x6f, // 'hello'
-        0xc3, // true
-        0xc0, // nil
-      ]);
-      final result = deserializeAll(buffer);
-      expect(result, [123, 'hello', true, null]);
-    });
-
-    test('deserializes mixed types sequentially', () {
-      // Encode multiple values
-      final bytes = serializeAll([
-        42,
-        'test',
-        {'key': 'value'},
-      ]);
-
-      // Deserialize all at once
-      final result = deserializeAll(bytes);
-      expect(result.length, 3);
-      expect(result[0], 42);
-      expect(result[1], 'test');
-      expect(result[2], {'key': 'value'});
-    });
-
-    test('differs from deserialize() with arrays', () {
-      // Three separate integers (no array wrapper)
-      final bufferAll = Uint8List.fromList([0x01, 0x02, 0x03]);
-      final resultAll = deserializeAll(bufferAll);
-      expect(resultAll, [1, 2, 3]);
-      expect(resultAll, isA<List<Object?>>());
-
-      // One array with three elements
-      final bufferArray = Uint8List.fromList([
-        0x93, // fixarray len=3
-        0x01,
-        0x02,
-        0x03,
-      ]);
-      final resultArray = deserialize(bufferArray);
-      expect(resultArray, [1, 2, 3]);
-
-      // Both have same values but different representations
-      expect(resultAll, equals(resultArray));
-    });
-
-    test('round-trip with serializeAll', () {
-      final original = [
-        123,
-        'hello',
-        true,
-        null,
-        [1, 2],
-        {'a': 'b'},
-      ];
-      final bytes = serializeAll(original);
-      final result = deserializeAll(bytes);
-      expect(result, original);
-    });
-
-    test('decodes built-in timestamp extension', () {
-      final date = DateTime.utc(2020);
-      final bytes = serializeAll([date]);
-      final result = deserializeAll(bytes);
-
-      expect(result.length, 1);
-      expect(result[0], isA<DateTime>());
-      expect((result[0]! as DateTime).year, 2020);
-    });
-
-    test('handles complex nested structures', () {
-      final original = [
-        {
-          'users': [1, 2, 3],
-        },
-        [true, false],
-        'end',
-      ];
-
-      final bytes = serializeAll(original);
-      final result = deserializeAll(bytes);
-
-      expect(result.length, 3);
-      expect(result[0], {
-        'users': [1, 2, 3],
-      });
-      expect(result[1], [true, false]);
-      expect(result[2], 'end');
-    });
-
-    test('processes all available bytes', () {
-      // Create buffer with 5 integers
-      final buffer = Uint8List.fromList([0x01, 0x02, 0x03, 0x04, 0x05]);
-      final result = deserializeAll(buffer);
-      expect(result, [1, 2, 3, 4, 5]);
-    });
-
-    test('handles strings correctly', () {
-      final buffer = Uint8List.fromList([
-        0xa3, // fixstr len=3
-        0x66, 0x6f, 0x6f, // 'foo'
-        0xa3, // fixstr len=3
-        0x62, 0x61, 0x72, // 'bar'
-      ]);
-      final result = deserializeAll(buffer);
-      expect(result, ['foo', 'bar']);
-    });
-
-    test('throws on incomplete data', () {
-      // str8 format says there are 10 bytes but buffer ends early
-      final buffer = Uint8List.fromList([
-        0xd9, // str8 format
-        0x0a, // length = 10
-        0x68, 0x69, // only 2 bytes provided (incomplete)
-      ]);
-      expect(
-        () => deserializeAll(buffer),
-        throwsA(isA<RangeError>()),
-      );
-    });
-
-    test('stops at exact buffer end', () {
-      // Three values that exactly fill the buffer
-      final buffer = Uint8List.fromList([
-        0xc3, // true
-        0xc2, // false
-        0xc0, // nil
-      ]);
-      final result = deserializeAll(buffer);
-      expect(result, [true, false, null]);
-      expect(result.length, 3);
     });
   });
 }

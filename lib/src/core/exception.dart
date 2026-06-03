@@ -1,3 +1,9 @@
+/// MessagePack exceptions.
+///
+/// This library defines the exception hierarchy used by `pro_mpack` to signal
+/// various error conditions during serialization and deserialization.
+library;
+
 /// Base class for all exceptions thrown by the MessagePack library.
 ///
 /// This is a `sealed` class, meaning you can exhaustively catch all its
@@ -44,10 +50,11 @@ sealed class MessagePackException implements Exception {
   }
 }
 
-/// Thrown when the binary data does not conform to the MessagePack spec.
+/// Thrown when the binary data does not conform to the MessagePack
+/// specification.
 ///
 /// Examples include encountering reserved bytes (0xc1), malformed timestamps,
-/// or reaching the end of the buffer unexpectedly.
+/// or calling unpack on an empty buffer.
 class MessagePackFormatException extends MessagePackException {
   /// Creates a [MessagePackFormatException].
   const MessagePackFormatException(super.message, [super.suggestion]);

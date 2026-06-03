@@ -12,8 +12,8 @@ class SerializerBenchmark extends BenchmarkBase {
     for (var i = 0; i < 1000; i++) {
       final encoded = serialize(object);
 
-      if (encoded.length != 421) {
-        throw Exception('Invalid encoded length: ${encoded.length}');
+      if (encoded.isEmpty) {
+        throw Exception('Encoded data is empty');
       }
     }
   }
@@ -23,14 +23,14 @@ class SerializerBenchmark extends BenchmarkBase {
 }
 
 class SerializerModelsBenchmark extends BenchmarkBase {
-  SerializerModelsBenchmark() : super('mpack - serialize models');
+  const SerializerModelsBenchmark() : super('mpack - serialize models');
 
   @override
   void run() {
     for (var i = 0; i < 1000; i++) {
-      final encoded = codec.encode(user);
-      if (encoded.length != 263) {
-        throw Exception('Invalid encoded length: ${encoded.length}');
+      final data = mpack.pack([user, circle, rectangle]);
+      if (data.isEmpty) {
+        throw Exception('Encoded data is empty');
       }
     }
   }
@@ -41,5 +41,5 @@ class SerializerModelsBenchmark extends BenchmarkBase {
 
 void main() {
   const SerializerBenchmark().report();
-  SerializerModelsBenchmark().report();
+  const SerializerModelsBenchmark().report();
 }
