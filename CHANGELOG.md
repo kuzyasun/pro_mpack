@@ -1,4 +1,7 @@
 <!-- markdownlint-disable-file MD025 -->
+# 3.0.0+1
+
+- **Fix**: README.md
 
 # 3.0.0
 

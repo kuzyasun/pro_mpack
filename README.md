@@ -1,7 +1,7 @@
 # pro_mpack
 
 [![pub package](https://img.shields.io/pub/v/pro_mpack.svg)](https://pub.dev/packages/pro_mpack)
-[![Tests](https://github.com/pro100andrey/pro_mpack/workflows/Tests/badge.svg)](https://github.com/pro100andrey/pro_mpack/actions)
+[![Dart CI](https://github.com/pro100andrey/pro_mpack/actions/workflows/dart.yml/badge.svg)](https://github.com/pro100andrey/pro_mpack/actions/workflows/dart.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 **High-performance MessagePack serializer and deserializer for Dart.**
@@ -219,7 +219,7 @@ For complete and detailed API documentation, visit the [official pub.dev API ref
 | **`Packer`** | The low-level zero-allocation encoder. Borrows memory from `BinaryWriterPool` to write data rapidly. |
 | **`Unpacker`** | The low-level decoder for reading primitive structures directly from a payload. |
 | **`streamDecoder`** | A zero-allocation `StreamTransformer` that pieces together fragmented chunks of `MessagePack` data. |
-| **`serialize` | `deserialize`**  Top-level global functions for one-off convenience parsing. |
+| **`serialize` \ `deserialize`** | Top-level global functions for one-off convenience parsing. |
 
 ## Error Handling
 
