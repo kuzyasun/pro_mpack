@@ -11,6 +11,7 @@ import 'package:pro_binary/pro_binary.dart';
 
 import 'constants.dart';
 import 'exception.dart';
+import 'timestamp.dart';
 
 /// Called by the [Packer] when it encounters a type it cannot natively
 /// handle.
@@ -43,6 +44,27 @@ class Float {
 /// Internal packer state structure for the [Packer] extension type.
 typedef _PackerState = ({BinaryWriter writer, dynamic encodeExt});
 
+/// The single ext-header format table: maps an extension payload [length] to
+/// its `(marker, headerSize)`. Consulted by both ext-write strategies — the
+/// reserve-then-shift path in `packExt` and the forward-write path in
+/// `_writeExtHeader` — so the two cannot disagree on framing.
+///
+/// `headerSize` is the total header byte count including the marker and the
+/// 1-byte type: `2` for fixext (no length field), `3`/`4`/`6` for ext8/16/32.
+/// Lengths above [limitUint16] map to ext32; callers that cannot shift handle
+/// the `> limitUint32` overflow themselves.
+@pragma('vm:prefer-inline')
+(int marker, int headerSize) _extHeaderFor(int length) => switch (length) {
+  1 => (fFixExt1, 2),
+  2 => (fFixExt2, 2),
+  4 => (fFixExt4, 2),
+  8 => (fFixExt8, 2),
+  16 => (fFixExt16, 2),
+  <= limitUint8 => (fExt8, 3),
+  <= limitUint16 => (fExt16, 4),
+  _ => (fExt32, 6),
+};
+
 /// A high-performance MessagePack serializer.
 ///
 /// [Packer] uses a [BinaryWriter] from `pro_binary` to encode Dart objects
@@ -72,6 +94,52 @@ extension type Packer._(_PackerState _st) {
         writer: BinaryWriterPool.acquire(initialBufferSize),
         encodeExt: encodeExt,
       );
+
+  /// Encodes a single [value] to bytes, owning the full pool lifecycle.
+  ///
+  /// Acquires a [Packer], packs [value], returns its bytes, and always releases
+  /// the buffer back to the pool — even on error. Use this instead of the
+  /// acquire/`takeBytes`/`finally dispose` dance by hand.
+  @pragma('vm:prefer-inline')
+  static Uint8List encode(
+    dynamic value, {
+    EncodeExt? encodeExt,
+    int initialBufferSize = 1024,
+  }) {
+    final p = Packer(
+      encodeExt: encodeExt,
+      initialBufferSize: initialBufferSize,
+    );
+    try {
+      p.pack(value);
+      return p.takeBytes();
+    } finally {
+      p.dispose();
+    }
+  }
+
+  /// Encodes a sequence of [values] into one buffer, owning the pool lifecycle.
+  ///
+  /// The values are concatenated with no top-level array; the buffer is always
+  /// released back to the pool, even on error.
+  static Uint8List encodeAll(
+    Iterable<dynamic> values, {
+    EncodeExt? encodeExt,
+    int initialBufferSize = 1024,
+  }) {
+    final p = Packer(
+      encodeExt: encodeExt,
+      initialBufferSize: initialBufferSize,
+    );
+    try {
+      for (final value in values) {
+        p.pack(value);
+      }
+      return p.takeBytes();
+    } finally {
+      p.dispose();
+    }
+  }
 
   /// The underlying [BinaryWriter].
   @pragma('vm:prefer-inline')
@@ -131,6 +199,66 @@ extension type Packer._(_PackerState _st) {
   @pragma('vm:prefer-inline')
   void packMap(Map<dynamic, dynamic>? value) =>
       value == null ? packNull() : _packMap(value);
+
+  /// Writes only the MessagePack array header for an array of [count] elements
+  /// (`fixarray`/`array16`/`array32`).
+  ///
+  /// The caller must then write exactly [count] values with the typed pack
+  /// methods. This is the low-level dual of [packArray] for encoding an array
+  /// element-by-element without building an intermediate collection; the bytes
+  /// are identical to [packArray] over the equivalent values.
+  ///
+  /// Throws [MessagePackSizeException] if [count] exceeds [limitUint32].
+  @pragma('vm:prefer-inline')
+  void packArrayLength(int count) {
+    switch (count) {
+      case <= 15:
+        _wr.writeUint8(fFixArrayPrefix | count);
+      case <= limitUint16:
+        _wr
+          ..writeUint8(fArray16)
+          ..writeUint16(count);
+      case <= limitUint32:
+        _wr
+          ..writeUint8(fArray32)
+          ..writeUint32(count);
+      default:
+        throw const MessagePackSizeException(
+          'Array is too big to be serialized with MessagePack.',
+          'Ensure the Iterable has no more than 4,294,967,295 elements.',
+        );
+    }
+  }
+
+  /// Writes only the MessagePack map header for a map of [count] entries
+  /// (`fixmap`/`map16`/`map32`).
+  ///
+  /// The caller must then write exactly [count] key/value pairs with the typed
+  /// pack methods. This is the low-level dual of [packMap] for encoding a map
+  /// entry-by-entry without building an intermediate collection; the bytes are
+  /// identical to [packMap] over the equivalent entries.
+  ///
+  /// Throws [MessagePackSizeException] if [count] exceeds [limitUint32].
+  @pragma('vm:prefer-inline')
+  void packMapLength(int count) {
+    switch (count) {
+      case <= 15:
+        _wr.writeUint8(fFixMapPrefix | count);
+      case <= limitUint16:
+        _wr
+          ..writeUint8(fMap16)
+          ..writeUint16(count);
+      case <= limitUint32:
+        _wr
+          ..writeUint8(fMap32)
+          ..writeUint32(count);
+      default:
+        throw const MessagePackSizeException(
+          'Map is too big to be serialized with MessagePack.',
+          'Ensure the Map has no more than 4,294,967,295 key-value pairs.',
+        );
+    }
+  }
 
   /// Packs a [DateTime] [value] using the standard MessagePack timestamp
   /// extension.
@@ -234,16 +362,7 @@ extension type Packer._(_PackerState _st) {
 
     final payloadLength = _wr.bytesWritten - startPos - maxHeaderSize;
 
-    final (headerSize, marker) = switch (payloadLength) {
-      1 => (2, fFixExt1),
-      2 => (2, fFixExt2),
-      4 => (2, fFixExt4),
-      8 => (2, fFixExt8),
-      16 => (2, fFixExt16),
-      <= limitUint8 => (3, fExt8),
-      <= limitUint16 => (4, fExt16),
-      _ => (6, fExt32),
-    };
+    final (marker, headerSize) = _extHeaderFor(payloadLength);
 
     if (headerSize < maxHeaderSize) {
       _wr.shiftBytes(
@@ -292,35 +411,25 @@ extension type Packer._(_PackerState _st) {
 
   @pragma('vm:prefer-inline')
   void _writeExtHeader(int type, int length) {
-    switch (length) {
-      case 1:
-        _wr.writeUint8(fFixExt1);
-      case 2:
-        _wr.writeUint8(fFixExt2);
+    if (length > limitUint32) {
+      throw const MessagePackSizeException(
+        'Extension payload is too large.',
+        'Ensure the encoded extension data size does not '
+            'exceed 4,294,967,295 bytes.',
+      );
+    }
+
+    final (marker, headerSize) = _extHeaderFor(length);
+
+    _wr.writeUint8(marker);
+    switch (headerSize) {
+      case 3:
+        _wr.writeUint8(length);
       case 4:
-        _wr.writeUint8(fFixExt4);
-      case 8:
-        _wr.writeUint8(fFixExt8);
-      case 16:
-        _wr.writeUint8(fFixExt16);
-      case <= limitUint8:
-        _wr
-          ..writeUint8(fExt8)
-          ..writeUint8(length);
-      case <= limitUint16:
-        _wr
-          ..writeUint8(fExt16)
-          ..writeUint16(length);
-      case <= limitUint32:
-        _wr
-          ..writeUint8(fExt32)
-          ..writeUint32(length);
-      case _:
-        throw const MessagePackSizeException(
-          'Extension payload is too large.',
-          'Ensure the encoded extension data size does not '
-              'exceed 4,294,967,295 bytes.',
-        );
+        _wr.writeUint16(length);
+      case 6:
+        _wr.writeUint32(length);
+      // headerSize 2 → fixext, no length field
     }
 
     _wr.writeInt8(type);
@@ -406,34 +515,60 @@ extension type Packer._(_PackerState _st) {
 
   /// Packs a [String] [value] using UTF-8 encoding.
   ///
+  /// Encodes the body in a single UTF-8 pass: it reserves the maximum string
+  /// header, writes the body once (so the string is never scanned twice — once
+  /// to size and once to write), then backpatches the smallest valid header and
+  /// shifts the body left over the unused reserve. Same Reserve & Backpatch
+  /// pattern as [packExt]; output is byte-identical to the two-pass form.
+  ///
   /// Throws [MessagePackSizeException] if byte length exceeds [limitUint32].
   @pragma('vm:prefer-inline')
   void _packString(String value) {
-    final length = getUtf8Length(value);
-
-    switch (length) {
-      case <= 31:
-        _wr.writeUint8(fFixStrPrefix | length);
-      case <= limitUint8:
-        _wr
-          ..writeUint8(fStr8)
-          ..writeUint8(length);
-      case <= limitUint16:
-        _wr
-          ..writeUint8(fStr16)
-          ..writeUint16(length);
-      case <= limitUint32:
-        _wr
-          ..writeUint8(fStr32)
-          ..writeUint32(length);
-      default:
-        throw const MessagePackSizeException(
-          'String is too long to be serialized with MessagePack.',
-          'Ensure string byte length does not exceed 4,294,967,295 bytes.',
-        );
+    // Empty string short-circuits the reserve/shift: the trailing-block shift
+    // can't reclaim reserved space when the body is zero-length.
+    if (value.isEmpty) {
+      _wr.writeUint8(fFixStrPrefix);
+      return;
     }
 
-    _wr.writeString(value);
+    const maxHeaderSize = 5; // str32: 1 marker + 4 length bytes
+
+    final startPos = _wr.reserve(maxHeaderSize);
+
+    _wr.writeString(value); // single UTF-8 pass
+
+    final length = _wr.bytesWritten - startPos - maxHeaderSize;
+
+    final (marker, headerSize) = switch (length) {
+      <= 31 => (fFixStrPrefix | length, 1),
+      <= limitUint8 => (fStr8, 2),
+      <= limitUint16 => (fStr16, 3),
+      <= limitUint32 => (fStr32, 5),
+      _ => throw const MessagePackSizeException(
+        'String is too long to be serialized with MessagePack.',
+        'Ensure string byte length does not exceed 4,294,967,295 bytes.',
+      ),
+    };
+
+    if (headerSize < maxHeaderSize) {
+      _wr.shiftBytes(
+        startPos + maxHeaderSize,
+        _wr.bytesWritten,
+        startPos + headerSize,
+      );
+    }
+
+    _wr.setUint8(startPos, marker);
+
+    switch (headerSize) {
+      case 2:
+        _wr.setUint8(startPos + 1, length);
+      case 3:
+        _wr.setUint16(startPos + 1, length);
+      case 5:
+        _wr.setUint32(startPos + 1, length);
+      // headerSize 1 → fixstr, marker already encodes the length
+    }
   }
 
   /// Packs a binary [value].
@@ -473,23 +608,7 @@ extension type Packer._(_PackerState _st) {
   void _packArray(Iterable<dynamic> value) {
     final length = value.length;
 
-    switch (length) {
-      case <= 15:
-        _wr.writeUint8(fFixArrayPrefix | length);
-      case <= limitUint16:
-        _wr
-          ..writeUint8(fArray16)
-          ..writeUint16(length);
-      case <= limitUint32:
-        _wr
-          ..writeUint8(fArray32)
-          ..writeUint32(length);
-      default:
-        throw const MessagePackSizeException(
-          'Array is too big to be serialized with MessagePack.',
-          'Ensure the Iterable has no more than 4,294,967,295 elements.',
-        );
-    }
+    packArrayLength(length);
 
     // Optimize for List to avoid iterator overhead.
     if (value is List) {
@@ -509,25 +628,7 @@ extension type Packer._(_PackerState _st) {
   /// [limitUint32].
   @pragma('vm:prefer-inline')
   void _packMap(Map<dynamic, dynamic> value) {
-    final length = value.length;
-
-    switch (length) {
-      case <= 15:
-        _wr.writeUint8(fFixMapPrefix | length);
-      case <= limitUint16:
-        _wr
-          ..writeUint8(fMap16)
-          ..writeUint16(length);
-      case <= limitUint32:
-        _wr
-          ..writeUint8(fMap32)
-          ..writeUint32(length);
-      default:
-        throw const MessagePackSizeException(
-          'Map is too big to be serialized with MessagePack.',
-          'Ensure the Map has no more than 4,294,967,295 key-value pairs.',
-        );
-    }
+    packMapLength(value.length);
 
     for (final entry in value.entries) {
       pack(entry.key);
@@ -542,48 +643,7 @@ extension type Packer._(_PackerState _st) {
   /// based on the value's range and precision.
   @pragma('vm:prefer-inline')
   void _packTimestamp(DateTime value) {
-    final micro = (value.isUtc ? value : value.toUtc()).microsecondsSinceEpoch;
-    const million = 1_000_000;
-    final sec = (micro / million).floor();
-    final nano = ((micro % million + million) % million) * 1_000;
-
-    // 0x3FFFFFFFF is max 34-bit unsigned integer
-    if (sec >= 0 && sec <= 0x3FFFFFFFF) {
-      // Timestamp 32 — 1970..2106, no nanoseconds
-      if (nano == 0 && sec <= limitUint32) {
-        _wr
-          ..writeUint8(fFixExt4)
-          ..writeInt8(extTypeTimestamp)
-          ..writeUint32(sec);
-        return;
-      }
-
-      // Timestamp 64 — 1970..~2514, with nanoseconds.
-      //
-      // IMPORTANT: MessagePack TS64 format stores nanoseconds in the upper
-      // 30 bits and seconds in the lower 34 bits of an 8-byte unsigned integer.
-      //
-      // Dart's bitwise operators work on 64-bit integers on native platforms
-      // but are restricted to 32 bits on Web (Dart2JS).
-      // To ensure cross-platform correctness, we split the 64-bit payload
-      // into two 32-bit writes.
-      final high32 = (nano << 2) | (sec ~/ 0x100000000);
-      final low32 = sec & 0xFFFFFFFF;
-
-      _wr
-        ..writeUint8(fFixExt8)
-        ..writeInt8(extTypeTimestamp)
-        ..writeUint32(high32)
-        ..writeUint32(low32);
-    } else {
-      // Timestamp 96 — before 1970 or after ~2514
-      _wr
-        ..writeUint8(fExt8)
-        ..writeUint8(12)
-        ..writeInt8(extTypeTimestamp)
-        ..writeUint32(nano)
-        ..writeInt64(sec);
-    }
+    MessagePackTimestamp.encode(_wr, value);
   }
 
   /// Appends [bytes] directly to the buffer without any encoding.

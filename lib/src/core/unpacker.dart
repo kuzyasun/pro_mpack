@@ -11,6 +11,8 @@ import 'package:pro_binary/pro_binary.dart';
 
 import 'constants.dart';
 import 'exception.dart';
+import 'grammar.dart';
+import 'timestamp.dart';
 
 /// Called by the [Unpacker] when it encounters a MessagePack ext type.
 ///
@@ -130,6 +132,35 @@ extension type Unpacker._(_UnpackerState _st) {
   @pragma('vm:prefer-inline')
   Map<dynamic, dynamic>? unpackMap() => _readNullable(_unpackMap);
 
+  /// Unpacks the next value as a map with keys of type [K] and values of type
+  /// [V].
+  ///
+  /// Throws if the value is a MessagePack nil byte; for a nullable map use
+  /// [unpackMap] and cast yourself.
+  Map<K, V> unpackMapOf<K, V>() => unpackMap()!.cast<K, V>();
+
+  /// Reads only the next array header and returns its element count.
+  ///
+  /// The caller must then read exactly that many values with the typed unpack
+  /// methods. This is the low-level dual of [unpackArray] for decoding an array
+  /// element-by-element without materializing a [List]. It does not handle
+  /// `nil` — a nullable array is the caller's concern.
+  ///
+  /// Throws [MessagePackFormatException] if the next header is not an array.
+  @pragma('vm:prefer-inline')
+  int unpackArrayLength() => _arrayLength(_rd.readUint8());
+
+  /// Reads only the next map header and returns its entry count.
+  ///
+  /// The caller must then read exactly that many key/value pairs with the typed
+  /// unpack methods. This is the low-level dual of [unpackMap] for decoding a
+  /// map entry-by-entry without materializing a [Map]. It does not handle
+  /// `nil` — a nullable map is the caller's concern.
+  ///
+  /// Throws [MessagePackFormatException] if the next header is not a map.
+  @pragma('vm:prefer-inline')
+  int unpackMapLength() => _mapLength(_rd.readUint8());
+
   /// Unpacks the next value as a MessagePack timestamp extension ([DateTime]).
   ///
   /// Returns `null` if the value is a MessagePack nil byte.
@@ -213,6 +244,71 @@ extension type Unpacker._(_UnpackerState _st) {
     };
   }
 
+  /// Advances past exactly one complete value of any type (scalar, string,
+  /// binary, array, map, ext, nil), leaving the reader positioned at the next
+  /// value. For an array or map it skips the header and all nested elements
+  /// recursively.
+  ///
+  /// This is the buffered counterpart of [unpack] — it walks the same shared
+  /// wire-format grammar but advances the offset instead of materializing a
+  /// value. Use it to drop the value under an unrecognised key.
+  ///
+  /// Throws [MessagePackFormatException] on a reserved (`0xc1`) or unknown
+  /// header byte, and [RangeError] if the buffer is exhausted mid-value.
+  void skip() {
+    final header = _rd.readUint8();
+
+    switch (mpShapes[header]) {
+      case MpShape.single:
+        break;
+      case MpShape.fixed:
+        _rd.skip(mpFixedSkip[header]);
+      case MpShape.fixExt:
+        _rd.skip(1 + mpFixedSkip[header]); // type byte + data
+      case MpShape.fixStr:
+        _rd.skip(header & fFixStrDataMask);
+      case MpShape.strBin8:
+        _rd.skip(_rd.readUint8());
+      case MpShape.strBin16:
+        _rd.skip(_rd.readUint16());
+      case MpShape.strBin32:
+        _rd.skip(_rd.readUint32());
+      case MpShape.fixArray:
+        _skipValues(header & fFixCountMask);
+      case MpShape.array16:
+        _skipValues(_rd.readUint16());
+      case MpShape.array32:
+        _skipValues(_rd.readUint32());
+      case MpShape.fixMap:
+        _skipValues((header & fFixCountMask) * 2);
+      case MpShape.map16:
+        _skipValues(_rd.readUint16() * 2);
+      case MpShape.map32:
+        _skipValues(_rd.readUint32() * 2);
+      case MpShape.ext8:
+        _rd.skip(_rd.readUint8() + 1); // data + type byte
+      case MpShape.ext16:
+        _rd.skip(_rd.readUint16() + 1);
+      case MpShape.ext32:
+        _rd.skip(_rd.readUint32() + 1);
+      case MpShape.neverUsed:
+        throw const MessagePackFormatException(
+          'Invalid format byte 0xc1 (never used)',
+        );
+      case MpShape.unknown:
+        throw MessagePackFormatException(
+          'Unknown format byte: 0x${header.toRadixString(16).padLeft(2, '0')}',
+        );
+    }
+  }
+
+  /// Skips [count] consecutive values (array elements or map keys+values).
+  void _skipValues(int count) {
+    for (var i = 0; i < count; i++) {
+      skip();
+    }
+  }
+
   /// Internal: Reads the next header byte. If it is `nil`, returns `null`.
   /// Otherwise, calls the [parser] with the header byte.
   @pragma('vm:prefer-inline')
@@ -280,15 +376,28 @@ extension type Unpacker._(_UnpackerState _st) {
     return _rd.readBytes(len);
   }
 
+  /// Internal: Reads an array header's element count.
+  @pragma('vm:prefer-inline')
+  int _arrayLength(int header) => switch (header) {
+    >= fFixArrayPrefix && <= fFixArrayEnd => header & fFixCountMask,
+    fArray16 => _rd.readUint16(),
+    fArray32 => _rd.readUint32(),
+    _ => _throwExpected('array', header),
+  };
+
+  /// Internal: Reads a map header's entry count.
+  @pragma('vm:prefer-inline')
+  int _mapLength(int header) => switch (header) {
+    >= fFixMapPrefix && <= fFixMapEnd => header & fFixCountMask,
+    fMap16 => _rd.readUint16(),
+    fMap32 => _rd.readUint32(),
+    _ => _throwExpected('map', header),
+  };
+
   /// Internal: Decodes an array based on its header.
   @pragma('vm:prefer-inline')
   List<dynamic> _unpackArray(int header) {
-    final len = switch (header) {
-      >= fFixArrayPrefix && <= fFixArrayEnd => header & fFixCountMask,
-      fArray16 => _rd.readUint16(),
-      fArray32 => _rd.readUint32(),
-      _ => _throwExpected('array', header),
-    };
+    final len = _arrayLength(header);
 
     if (len == 0) {
       return const [];
@@ -305,12 +414,7 @@ extension type Unpacker._(_UnpackerState _st) {
   /// Internal: Decodes a map based on its header.
   @pragma('vm:prefer-inline')
   Map<dynamic, dynamic> _unpackMap(int header) {
-    final len = switch (header) {
-      >= fFixMapPrefix && <= fFixMapEnd => header & fFixCountMask,
-      fMap16 => _rd.readUint16(),
-      fMap32 => _rd.readUint32(),
-      _ => _throwExpected('map', header),
-    };
+    final len = _mapLength(header);
 
     if (len == 0) {
       return const {};
@@ -367,43 +471,11 @@ extension type Unpacker._(_UnpackerState _st) {
     );
   }
 
-  /// Internal: Decodes a MessagePack timestamp extension.
+  /// Internal: Decodes a MessagePack timestamp extension via the
+  /// [MessagePackTimestamp] codec.
   @pragma('vm:prefer-inline')
-  DateTime _unpackTimestamp(int length) {
-    switch (length) {
-      case 4:
-        final seconds = _rd.readUint32();
-        return DateTime.fromMillisecondsSinceEpoch(
-          seconds * 1000,
-          isUtc: true,
-        );
-      case 8:
-        final data64 = _rd.readUint64();
-        // TS64 format: 30 bits for nanoseconds, 34 bits for seconds.
-        // nanoSeconds = data64 >> 34
-        // seconds = data64 & 0x3FFFFFFFF (34 bits mask)
-        final nanoSeconds = (data64 >> 34) & 0x3FFFFFFF;
-        final seconds = data64 & 0x3FFFFFFFF;
-        final microseconds = seconds * 1000000 + nanoSeconds ~/ 1000;
-        return DateTime.fromMicrosecondsSinceEpoch(
-          microseconds,
-          isUtc: true,
-        );
-      case 12:
-        final nanoSeconds = _rd.readUint32();
-        final seconds = _rd.readInt64();
-        final microseconds = seconds * 1000000 + nanoSeconds ~/ 1000;
-        return DateTime.fromMicrosecondsSinceEpoch(
-          microseconds,
-          isUtc: true,
-        );
-      default:
-        throw MessagePackFormatException(
-          'Invalid timestamp length: $length',
-          'Timestamps must be 4, 8, or 12 bytes long according to the spec.',
-        );
-    }
-  }
+  DateTime _unpackTimestamp(int length) =>
+      MessagePackTimestamp.decode(_rd, length);
 
   /// Rebinds the underlying [BinaryReader] to a new [buffer] without creating
   /// a new [Unpacker] instance.
