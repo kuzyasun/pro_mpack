@@ -1,4 +1,9 @@
 <!-- markdownlint-disable-file MD025 -->
+
+# 3.2.0
+
+**Update Deps**: meta: '>=1.18.0 <2.0.0'
+
 # 3.1.1
 
 - **Update**: Updated dependencies to the latest versions to ensure compatibility and stability.
